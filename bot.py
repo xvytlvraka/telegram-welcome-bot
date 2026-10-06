@@ -3,8 +3,9 @@ import asyncio
 import logging
 
 from aiohttp import web
+from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.filters import Command
 from aiogram.types import (
@@ -18,45 +19,29 @@ from aiogram.client.default import DefaultBotProperties
 
 
 # ============================================================
-# CONFIG
+# LOAD ENV
 # ============================================================
 
+load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
-# Channel where all your channel/group links are available
+ADMIN_ID_RAW = os.getenv("ADMIN_ID", "").strip()
 LINKS_CHANNEL = os.getenv(
     "LINKS_CHANNEL",
     "https://t.me/your_links_channel"
 ).strip()
 
-# Optional monitored chat IDs.
-#
-# Example:
-# -1001234567890,-1009876543210
-#
-# Leave empty = monitor every chat where bot is admin.
-MONITORED_CHATS_RAW = os.getenv("MONITORED_CHATS", "").strip()
-
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing")
+    raise RuntimeError("BOT_TOKEN is missing in .env / Render Environment")
 
+if not ADMIN_ID_RAW:
+    raise RuntimeError("ADMIN_ID is missing in .env / Render Environment")
 
-if MONITORED_CHATS_RAW:
-    MONITORED_CHATS = set()
-
-    for item in MONITORED_CHATS_RAW.split(","):
-        item = item.strip()
-
-        if item:
-            try:
-                MONITORED_CHATS.add(int(item))
-            except ValueError:
-                pass
-else:
-    MONITORED_CHATS = set()
+try:
+    ADMIN_ID = int(ADMIN_ID_RAW)
+except ValueError:
+    raise RuntimeError("ADMIN_ID must be a numeric Telegram user ID")
 
 
 # ============================================================
@@ -72,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# BOT / DISPATCHER
+# BOT
 # ============================================================
 
 bot = Bot(
@@ -89,26 +74,7 @@ dp = Dispatcher()
 # HELPERS
 # ============================================================
 
-def chat_is_monitored(chat_id: int) -> bool:
-    """
-    If MONITORED_CHATS is empty:
-        monitor every chat where the bot receives updates.
-
-    If MONITORED_CHATS contains IDs:
-        monitor only those chats.
-    """
-
-    if not MONITORED_CHATS:
-        return True
-
-    return chat_id in MONITORED_CHATS
-
-
-def user_name(user) -> str:
-    """
-    Safely get user's display name.
-    """
-
+def get_user_name(user) -> str:
     if user.first_name:
         return user.first_name
 
@@ -119,7 +85,6 @@ def user_name(user) -> str:
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
-
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -132,14 +97,13 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def rejoin_keyboard(link: str) -> InlineKeyboardMarkup:
-
+def rejoin_keyboard(invite_link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="↩️ ʀᴇᴊᴏɪɴ",
-                    url=link
+                    url=invite_link
                 )
             ]
         ]
@@ -147,19 +111,19 @@ def rejoin_keyboard(link: str) -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# START
+# /START
 # ============================================================
 
 @dp.message(Command("start"))
 async def start_handler(message: Message):
 
-    name = user_name(message.from_user)
+    name = get_user_name(message.from_user)
 
     text = (
         f"✨ <b>Hey {name}!</b>\n\n"
         "Welcome! You're all set. 🖤\n\n"
-        "Stay connected and explore our network below.\n"
-        "Everything you need is just one tap away.\n\n"
+        "Thanks for connecting with us.\n"
+        "Explore our complete network below and stay updated.\n\n"
         "━━━━━━━━━━━━━━\n"
         "⚡ <i>Stay connected. Stay updated.</i>"
     )
@@ -171,20 +135,22 @@ async def start_handler(message: Message):
 
 
 # ============================================================
-# USER ID
+# /ID
 # ============================================================
 
 @dp.message(Command("id"))
 async def id_handler(message: Message):
 
     await message.answer(
-        f"<b>Your Telegram ID:</b>\n<code>{message.from_user.id}</code>\n\n"
-        f"<b>Chat ID:</b>\n<code>{message.chat.id}</code>"
+        "🆔 <b>Your Telegram ID</b>\n"
+        f"<code>{message.from_user.id}</code>\n\n"
+        "💬 <b>Current Chat ID</b>\n"
+        f"<code>{message.chat.id}</code>"
     )
 
 
 # ============================================================
-# JOIN REQUEST
+# JOIN REQUEST AUTO APPROVAL
 # ============================================================
 
 @dp.chat_join_request()
@@ -193,16 +159,11 @@ async def join_request_handler(request: ChatJoinRequest):
     chat = request.chat
     user = request.from_user
 
-    chat_id = chat.id
-
-    if not chat_is_monitored(chat_id):
-        return
-
     logger.info(
-        "Join request | user=%s | chat=%s (%s)",
+        "Join request received | user=%s | chat=%s | chat_id=%s",
         user.id,
         chat.title,
-        chat_id
+        chat.id
     )
 
     # --------------------------------------------------------
@@ -212,12 +173,12 @@ async def join_request_handler(request: ChatJoinRequest):
     try:
 
         await bot.approve_chat_join_request(
-            chat_id=chat_id,
+            chat_id=chat.id,
             user_id=user.id
         )
 
         logger.info(
-            "Approved | user=%s | chat=%s",
+            "Join request approved | user=%s | chat=%s",
             user.id,
             chat.title
         )
@@ -225,27 +186,30 @@ async def join_request_handler(request: ChatJoinRequest):
     except Exception as e:
 
         logger.exception(
-            "Failed to approve join request: %s",
+            "Failed to approve join request | chat=%s | user=%s | %s",
+            chat.id,
+            user.id,
             e
         )
 
         return
 
-
     # --------------------------------------------------------
-    # PERSONAL WELCOME DM
+    # PERSONAL WELCOME
     # --------------------------------------------------------
 
-    name = user_name(user)
+    name = get_user_name(user)
+
+    chat_name = chat.title or "our community"
 
     welcome_text = (
         f"✨ <b>Welcome, {name}!</b>\n\n"
-        "Thanks for joining us. 🖤\n\n"
+        f"Thanks for joining <b>{chat_name}</b>. 🖤\n\n"
         "You're officially connected now.\n"
         "Stay tuned for fresh updates, useful content "
         "and more from our network.\n\n"
         "━━━━━━━━━━━━━━\n"
-        "🔗 <i>Explore the complete channel network below.</i>"
+        "🔗 <i>Explore our complete channel network below.</i>"
     )
 
     try:
@@ -257,31 +221,27 @@ async def join_request_handler(request: ChatJoinRequest):
         )
 
         logger.info(
-            "Welcome sent | user=%s",
+            "Welcome DM sent | user=%s",
             user.id
         )
 
     except Exception as e:
 
-        # User may have blocked the bot
         logger.warning(
-            "Could not send welcome DM to %s: %s",
+            "Welcome DM failed | user=%s | %s",
             user.id,
             e
         )
 
 
 # ============================================================
-# MEMBER STATUS CHANGE
+# LEAVE DETECTION
 # ============================================================
 
 @dp.chat_member()
 async def member_update_handler(update: ChatMemberUpdated):
 
     chat = update.chat
-
-    if not chat_is_monitored(chat.id):
-        return
 
     old_member = update.old_chat_member
     new_member = update.new_chat_member
@@ -299,114 +259,123 @@ async def member_update_handler(update: ChatMemberUpdated):
         new_status
     )
 
-    # ========================================================
-    # USER LEFT
-    # ========================================================
+    # --------------------------------------------------------
+    # DETECT REAL MEMBER -> LEFT
+    # --------------------------------------------------------
 
-    was_member = old_status in {
+    previous_member_statuses = {
         ChatMemberStatus.MEMBER,
         ChatMemberStatus.ADMINISTRATOR,
         ChatMemberStatus.CREATOR,
         ChatMemberStatus.RESTRICTED,
     }
 
-    is_left = new_status in {
+    left_statuses = {
         ChatMemberStatus.LEFT,
         ChatMemberStatus.KICKED,
     }
 
-    if was_member and is_left:
+    was_member = old_status in previous_member_statuses
+    has_left = new_status in left_statuses
 
-        name = user_name(user)
+    if not (was_member and has_left):
+        return
 
-        chat_title = chat.title or "this chat"
+    name = get_user_name(user)
+    chat_name = chat.title or "this chat"
 
-        # ----------------------------------------------------
-        # GET REJOIN LINK
-        # ----------------------------------------------------
+    logger.info(
+        "User left | user=%s | chat=%s | chat_id=%s",
+        user.id,
+        chat_name,
+        chat.id
+    )
 
-        rejoin_link = None
+    # --------------------------------------------------------
+    # AUTOMATIC REJOIN LINK
+    # --------------------------------------------------------
 
-        try:
+    invite_link = None
 
-            # For public chats this may return a t.me link.
-            # For private chats it uses the bot's invite link.
-            rejoin_link = await bot.export_chat_invite_link(
-                chat_id=chat.id
-            )
+    try:
 
-        except Exception as e:
-
-            logger.warning(
-                "Could not create invite link for %s: %s",
-                chat.id,
-                e
-            )
-
-        # ----------------------------------------------------
-        # FALLBACK FOR PUBLIC CHAT
-        # ----------------------------------------------------
-
-        if not rejoin_link:
-
-            if chat.username:
-
-                rejoin_link = f"https://t.me/{chat.username}"
-
-        # ----------------------------------------------------
-        # MESSAGE
-        # ----------------------------------------------------
-
-        leave_text = (
-            f"👋 <b>Hey {name}</b>\n\n"
-            f"We noticed that you left <b>{chat_title}</b>.\n\n"
-            "No worries — you're always welcome back. ✨\n\n"
-            "If you left by mistake or want to reconnect, "
-            "use the button below.\n\n"
-            "━━━━━━━━━━━━━━\n"
-            "🖤 <i>We'd love to have you back.</i>"
+        invite_link = await bot.export_chat_invite_link(
+            chat_id=chat.id
         )
 
-        # ----------------------------------------------------
-        # SEND DM
-        # ----------------------------------------------------
+        logger.info(
+            "Invite link created | chat=%s",
+            chat.id
+        )
 
-        try:
+    except Exception as e:
 
-            if rejoin_link:
+        logger.warning(
+            "Could not create invite link | chat=%s | %s",
+            chat.id,
+            e
+        )
 
-                await bot.send_message(
-                    chat_id=user.id,
-                    text=leave_text,
-                    reply_markup=rejoin_keyboard(
-                        rejoin_link
-                    )
-                )
+    # --------------------------------------------------------
+    # PUBLIC CHAT FALLBACK
+    # --------------------------------------------------------
 
-            else:
+    if not invite_link and chat.username:
 
-                await bot.send_message(
-                    chat_id=user.id,
-                    text=leave_text
-                )
+        invite_link = f"https://t.me/{chat.username}"
 
-            logger.info(
-                "Leave message sent | user=%s | chat=%s",
-                user.id,
-                chat.id
+    # --------------------------------------------------------
+    # LEAVE MESSAGE
+    # --------------------------------------------------------
+
+    leave_text = (
+        f"👋 <b>Hey {name}</b>\n\n"
+        f"We noticed that you left <b>{chat_name}</b>.\n\n"
+        "No worries — you're always welcome back. ✨\n\n"
+        "If you left by mistake or want to reconnect, "
+        "tap the button below.\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "🖤 <i>We'd love to have you back.</i>"
+    )
+
+    # --------------------------------------------------------
+    # SEND PRIVATE MESSAGE
+    # --------------------------------------------------------
+
+    try:
+
+        if invite_link:
+
+            await bot.send_message(
+                chat_id=user.id,
+                text=leave_text,
+                reply_markup=rejoin_keyboard(invite_link)
             )
 
-        except Exception as e:
+        else:
 
-            logger.warning(
-                "Could not send leave DM to %s: %s",
-                user.id,
-                e
+            await bot.send_message(
+                chat_id=user.id,
+                text=leave_text
             )
+
+        logger.info(
+            "Leave DM sent | user=%s | chat=%s",
+            user.id,
+            chat.id
+        )
+
+    except Exception as e:
+
+        logger.warning(
+            "Leave DM failed | user=%s | %s",
+            user.id,
+            e
+        )
 
 
 # ============================================================
-# ADMIN STATUS
+# ADMIN /STATUS
 # ============================================================
 
 @dp.message(Command("status"))
@@ -422,32 +391,23 @@ async def status_handler(message: Message):
 
     me = await bot.get_me()
 
-    monitored_text = (
-        "ALL CHATS"
-        if not MONITORED_CHATS
-        else "\n".join(
-            str(x)
-            for x in MONITORED_CHATS
-        )
-    )
-
     text = (
         "🤖 <b>BOT STATUS</b>\n\n"
         f"Username: @{me.username}\n"
         f"Bot ID: <code>{me.id}</code>\n\n"
-        f"<b>Monitored:</b>\n"
-        f"<code>{monitored_text}</code>\n\n"
-        "✅ Join approval: ON\n"
+        "━━━━━━━━━━━━━━\n"
+        "✅ Auto Join Approval: ON\n"
         "✅ Welcome DM: ON\n"
-        "✅ Leave detection: ON\n"
-        "✅ Rejoin button: ON\n"
+        "✅ Leave Detection: ON\n"
+        "✅ Automatic Rejoin Link: ON\n"
+        "✅ All Admin Chats: ON\n"
     )
 
     await message.answer(text)
 
 
 # ============================================================
-# ADMIN TEST
+# ADMIN /TEST
 # ============================================================
 
 @dp.message(Command("test"))
@@ -461,12 +421,12 @@ async def test_handler(message: Message):
 
         return
 
-    name = user_name(message.from_user)
+    name = get_user_name(message.from_user)
 
     text = (
         f"🧪 <b>Test successful, {name}!</b>\n\n"
-        "Welcome system is working.\n"
-        "Inline button is also enabled."
+        "The bot is online and responding correctly.\n\n"
+        "🔗 Welcome button is working."
     )
 
     await message.answer(
@@ -476,18 +436,17 @@ async def test_handler(message: Message):
 
 
 # ============================================================
-# HEALTH SERVER FOR RENDER
+# RENDER HEALTH SERVER
 # ============================================================
 
 async def health_handler(request):
-
     return web.Response(
         text="OK",
         status=200
     )
 
 
-async def start_web_server():
+async def start_health_server():
 
     app = web.Application()
 
@@ -501,16 +460,16 @@ async def start_web_server():
         health_handler
     )
 
-    runner = web.AppRunner(app)
-
-    await runner.setup()
-
     port = int(
         os.getenv(
             "PORT",
             "10000"
         )
     )
+
+    runner = web.AppRunner(app)
+
+    await runner.setup()
 
     site = web.TCPSite(
         runner,
@@ -521,7 +480,7 @@ async def start_web_server():
     await site.start()
 
     logger.info(
-        "Health server running on port %s",
+        "Render health server running on port %s",
         port
     )
 
@@ -532,37 +491,26 @@ async def start_web_server():
 
 async def main():
 
-    logger.info(
-        "Starting Telegram bot..."
-    )
+    logger.info("Starting bot...")
 
     me = await bot.get_me()
 
     logger.info(
-        "Logged in as @%s",
-        me.username
+        "Bot connected as @%s | ID=%s",
+        me.username,
+        me.id
     )
 
-    # --------------------------------------------------------
-    # Start Render health server
-    # --------------------------------------------------------
+    await start_health_server()
 
-    await start_web_server()
-
-    # --------------------------------------------------------
-    # Delete old webhook
-    # --------------------------------------------------------
-
+    # Remove webhook so polling works correctly
     await bot.delete_webhook(
         drop_pending_updates=False
     )
 
-    # --------------------------------------------------------
-    # Start polling
-    #
-    # chat_member is required for leave detection.
-    # chat_join_request is required for auto approval.
-    # --------------------------------------------------------
+    logger.info(
+        "Starting polling..."
+    )
 
     await dp.start_polling(
         bot,
@@ -575,17 +523,16 @@ async def main():
 
 
 # ============================================================
-# RUN
+# START
 # ============================================================
 
 if __name__ == "__main__":
 
     try:
-
         asyncio.run(main())
 
     except KeyboardInterrupt:
 
         logger.info(
             "Bot stopped."
-)
+        )
