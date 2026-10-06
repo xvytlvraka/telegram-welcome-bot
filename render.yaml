@@ -20,6 +20,3 @@ services:
 
       - key: LINKS_CHANNEL
         sync: false
-
-      - key: MONITORED_CHATS
-        sync: false
